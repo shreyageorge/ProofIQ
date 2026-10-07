@@ -267,27 +267,51 @@ def _create_ollama_plan(question, profile, execution_error=None):
     candidates = [
         message.get("content"),
         message.get("thinking"),
+        message.get("tool_calls"),
         response.get("response") if isinstance(response, dict) else None,
     ]
-    plan = None
-    for candidate in candidates:
-        if isinstance(candidate, dict):
-            plan = candidate
-            break
-        if not isinstance(candidate, str) or not candidate.strip():
-            continue
-        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate.strip(), flags=re.IGNORECASE)
-        try:
-            plan = json.loads(cleaned)
-            break
-        except json.JSONDecodeError:
-            start = cleaned.find("{")
-            if start >= 0:
-                try:
-                    plan, _ = json.JSONDecoder().raw_decode(cleaned[start:])
-                    break
-                except json.JSONDecodeError:
-                    continue
+
+    def extract_plan(value, depth=0):
+        """Accept the response variants used by local and hosted Ollama models."""
+        if depth > 5 or value is None:
+            return None
+        if isinstance(value, dict):
+            if {"status", "reason", "code"}.issubset(value):
+                return value
+            for key in ("arguments", "content", "text", "thinking", "function"):
+                found = extract_plan(value.get(key), depth + 1)
+                if found:
+                    return found
+            return None
+        if isinstance(value, list):
+            for item in value:
+                found = extract_plan(item, depth + 1)
+                if found:
+                    return found
+            return None
+        if not isinstance(value, str) or not value.strip():
+            return None
+        cleaned = re.sub(
+            r"^```(?:json)?\s*|\s*```$", "", value.strip(), flags=re.IGNORECASE
+        )
+        for parser in (json.loads, ast.literal_eval):
+            try:
+                decoded = parser(cleaned)
+            except (json.JSONDecodeError, ValueError, SyntaxError):
+                continue
+            found = extract_plan(decoded, depth + 1)
+            if found:
+                return found
+        start = cleaned.find("{")
+        if start >= 0:
+            try:
+                decoded, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+                return extract_plan(decoded, depth + 1)
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    plan = next((found for item in candidates if (found := extract_plan(item))), None)
     if not isinstance(plan, dict):
         location = "cloud" if settings.OLLAMA_URL == "https://ollama.com" else "local"
         raise RuntimeError(f"Ollama {location} returned an invalid analysis plan. Please retry.")

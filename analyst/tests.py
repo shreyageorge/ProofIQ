@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from io import BytesIO
 from tempfile import TemporaryDirectory
@@ -104,6 +105,36 @@ class AnalystCoreTests(TestCase):
                 '"code":"","assumptions":[],"used_tables":[]}\n```',
             }
         }
+
+        plan = _create_ollama_plan("question", {})
+
+        self.assertEqual(plan["status"], "CANNOT_DETERMINE")
+
+    @override_settings(OLLAMA_URL="https://ollama.com", OLLAMA_MODEL="test")
+    @patch("analyst.services._ollama_request")
+    def test_ollama_cloud_accepts_tool_call_arguments(self, request_mock):
+        request_mock.return_value = {
+            "message": {
+                "tool_calls": [{"function": {"arguments": {
+                    "status": "READY", "reason": "supported",
+                    "code": "result = 1\nevidence = []\nquality_notes = []",
+                    "assumptions": [], "used_tables": ["sales"],
+                }}}]
+            }
+        }
+
+        plan = _create_ollama_plan("question", {})
+
+        self.assertEqual(plan["status"], "READY")
+
+    @override_settings(OLLAMA_URL="https://ollama.com", OLLAMA_MODEL="test")
+    @patch("analyst.services._ollama_request")
+    def test_ollama_cloud_accepts_double_encoded_json(self, request_mock):
+        inner = json.dumps({
+            "status": "CANNOT_DETERMINE", "reason": "missing", "code": "",
+            "assumptions": [], "used_tables": [],
+        })
+        request_mock.return_value = {"message": {"content": json.dumps(inner)}}
 
         plan = _create_ollama_plan("question", {})
 
