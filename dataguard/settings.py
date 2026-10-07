@@ -62,6 +62,7 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama").strip().lower()
 AI_FALLBACK_PROVIDER = os.getenv("AI_FALLBACK_PROVIDER", "").strip().lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
+OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 
 if os.getenv("VERCEL"):
     DEBUG = False

@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 
@@ -145,24 +146,53 @@ def _create_openai_plan(question, profile):
 
 def _ollama_request(path, payload=None, timeout=180):
     base = settings.OLLAMA_URL
-    if base not in {"http://127.0.0.1:11434", "http://localhost:11434"}:
-        raise RuntimeError("OLLAMA_URL must point to the local Ollama server on port 11434.")
+    parsed = urllib.parse.urlparse(base)
+    is_local = base in {"http://127.0.0.1:11434", "http://localhost:11434"}
+    is_cloud = parsed.scheme == "https" and parsed.netloc == "ollama.com" and not parsed.path
+    if not (is_local or is_cloud):
+        raise RuntimeError(
+            "OLLAMA_URL must be http://127.0.0.1:11434 for local use or "
+            "https://ollama.com for a deployed app."
+        )
+    headers = {"Content-Type": "application/json"}
+    if is_cloud:
+        if not settings.OLLAMA_API_KEY:
+            raise RuntimeError(
+                "Ollama Cloud is selected, but OLLAMA_API_KEY is missing. Add it "
+                "to the Vercel project environment variables and redeploy."
+            )
+        headers["Authorization"] = f"Bearer {settings.OLLAMA_API_KEY}"
     data = None if payload is None else json.dumps(payload).encode("utf-8")
     request = urllib.request.Request(
         f"{base}{path}", data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="GET" if payload is None else "POST",
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")[:300]
+        if is_cloud and exc.code in {401, 403}:
+            raise RuntimeError(
+                "Ollama Cloud rejected the API key. Replace OLLAMA_API_KEY in "
+                "Vercel and redeploy."
+            ) from exc
+        raise RuntimeError(f"Ollama returned HTTP {exc.code}: {detail}") from exc
     except (urllib.error.URLError, TimeoutError) as exc:
+        if is_cloud:
+            raise RuntimeError(
+                "Ollama Cloud could not be reached from the deployment. Please retry."
+            ) from exc
         raise RuntimeError(
             "The local Ollama service is not reachable. Start it with `ollama serve`, then retry."
         ) from exc
 
 
 def ollama_status():
+    if settings.OLLAMA_URL == "https://ollama.com":
+        ready = bool(settings.OLLAMA_API_KEY)
+        return {"online": ready, "ready": ready, "model": settings.OLLAMA_MODEL}
     try:
         tags = _ollama_request("/api/tags", timeout=2)
         installed = {item.get("name", "") for item in tags.get("models", [])}
@@ -196,7 +226,8 @@ def _create_ollama_plan(question, profile):
             line for line in plan["code"].splitlines()
             if not line.strip().startswith(("import ", "from "))
         ).strip()
-    plan["provider_label"] = f"Ollama / {settings.OLLAMA_MODEL} (local)"
+    location = "cloud" if settings.OLLAMA_URL == "https://ollama.com" else "local"
+    plan["provider_label"] = f"Ollama / {settings.OLLAMA_MODEL} ({location})"
     return plan
 
 
@@ -217,7 +248,11 @@ def create_plan(question, profile):
                 "code": "",
                 "assumptions": [],
                 "used_tables": [],
-                "provider_label": f"Ollama / {settings.OLLAMA_MODEL} (local) + deterministic answerability guard",
+                "provider_label": (
+                    f"Ollama / {settings.OLLAMA_MODEL} "
+                    f"({'cloud' if settings.OLLAMA_URL == 'https://ollama.com' else 'local'}) "
+                    "+ deterministic answerability guard"
+                ),
             }
     provider = settings.AI_PROVIDER
     if provider == "openai":

@@ -18,18 +18,28 @@ Copy `.env.example` to `.env.local`. Never commit `.env.local`. Important values
 
 - `DJANGO_SECRET_KEY`: a long random production value.
 - `DJANGO_ALLOWED_HOSTS`: comma-separated hosts.
-- `AI_PROVIDER`: `ollama` locally; a network-accessible provider is required on Vercel.
-- `OLLAMA_URL` and `OLLAMA_MODEL`: local Ollama settings.
+- `AI_PROVIDER`: use `ollama` for both local and Ollama Cloud modes.
+- `OLLAMA_URL`: `http://127.0.0.1:11434` locally or `https://ollama.com` on Vercel.
+- `OLLAMA_MODEL`: `qwen3.5:4b` locally; set a cloud model on Vercel.
+- `OLLAMA_API_KEY`: required only for Ollama Cloud. Store it as a Vercel Secret,
+  never in Git or a client-side variable.
 
 ## Vercel deployment
 
 Vercel can detect Django from `app.py` and `vercel.json`. Import the Git repository
 in Vercel or run `vercel deploy`. Configure `DJANGO_SECRET_KEY` in Project Settings
-for Production, Preview, and Development.
+for Production, Preview, and Development. For working cloud analysis, also set:
+
+```text
+AI_PROVIDER=ollama
+OLLAMA_URL=https://ollama.com
+OLLAMA_MODEL=gpt-oss:120b-cloud
+OLLAMA_API_KEY=<create this in your Ollama account>
+```
 
 Important: Vercel Functions cannot call Ollama running on your laptop at
-`127.0.0.1`. A public deployment therefore needs a hosted LLM endpoint, while the
-local hackathon build can use Ollama for free. Upload storage in `/tmp` is ephemeral;
+`127.0.0.1`. The production values above call Ollama Cloud's HTTPS API instead,
+while the local hackathon build can keep using the local model. Upload storage in `/tmp` is ephemeral;
 for a multi-user production release, replace it with Vercel Blob or another object
 store. The current deployment is suitable for a short demo, not durable storage.
 

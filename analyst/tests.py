@@ -1,14 +1,14 @@
 from pathlib import Path
 from io import BytesIO
 from tempfile import TemporaryDirectory
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import TestCase, override_settings
 from django.urls import reverse
 from openpyxl import Workbook
 
-from .services import create_plan, execute_plan, load_tables, profile_tables, validate_code
+from .services import _ollama_request, create_plan, execute_plan, load_tables, profile_tables, validate_code
 
 
 class AnalystCoreTests(TestCase):
@@ -38,6 +38,27 @@ class AnalystCoreTests(TestCase):
         self.assertEqual(plan["status"], "CANNOT_DETERMINE")
         self.assertEqual(plan["code"], "")
         self.assertIn("no cost/profit data", plan["reason"])
+
+    @override_settings(
+        OLLAMA_URL="https://ollama.com",
+        OLLAMA_API_KEY="test-cloud-key",
+    )
+    @patch("analyst.services.urllib.request.urlopen")
+    def test_ollama_cloud_request_uses_bearer_key(self, mocked_urlopen):
+        response = MagicMock()
+        response.read.return_value = b'{"message":{"content":"ok"}}'
+        mocked_urlopen.return_value.__enter__.return_value = response
+
+        _ollama_request("/api/chat", {"model": "test"})
+
+        request = mocked_urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://ollama.com/api/chat")
+        self.assertEqual(request.get_header("Authorization"), "Bearer test-cloud-key")
+
+    @override_settings(OLLAMA_URL="https://ollama.com", OLLAMA_API_KEY="")
+    def test_ollama_cloud_requires_api_key(self):
+        with self.assertRaisesRegex(RuntimeError, "OLLAMA_API_KEY is missing"):
+            _ollama_request("/api/chat", {"model": "test"})
 
     def test_uploaded_file_can_be_removed_from_workspace(self):
         with TemporaryDirectory() as media_root:
