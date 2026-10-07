@@ -1,0 +1,292 @@
+import ast
+import json
+import math
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+import pandas as pd
+from django.conf import settings
+from openai import APIConnectionError, APIStatusError, OpenAI
+
+
+ALLOWED_SUFFIXES = {".csv", ".xlsx", ".xls"}
+MAX_ROWS = 200_000
+
+
+def safe_name(name: str) -> str:
+    stem = re.sub(r"[^a-zA-Z0-9_-]+", "_", Path(name).stem).strip("_") or "dataset"
+    return stem[:60]
+
+
+def load_tables(file_records):
+    tables = {}
+    sources = {}
+    for record in file_records:
+        path = Path(record["path"])
+        if path.suffix.lower() == ".csv":
+            frame = pd.read_csv(path, nrows=MAX_ROWS)
+            key = safe_name(record["name"])
+            tables[key] = frame
+            sources[key] = record["name"]
+        else:
+            with pd.ExcelFile(path) as workbook:
+                for sheet in workbook.sheet_names:
+                    key = f"{safe_name(record['name'])}__{safe_name(sheet)}"
+                    tables[key] = pd.read_excel(
+                        workbook,
+                        sheet_name=sheet,
+                        nrows=MAX_ROWS,
+                    )
+                    sources[key] = f"{record['name']} / {sheet}"
+    return tables, sources
+
+
+def _clean(value):
+    if pd.isna(value):
+        return None
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if hasattr(value, "item"):
+        value = value.item()
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    return value
+
+
+def profile_tables(tables, sources):
+    profile = {}
+    for key, frame in tables.items():
+        sample = [{str(k): _clean(v) for k, v in row.items()} for row in frame.head(3).to_dict("records")]
+        profile[key] = {
+            "source": sources[key],
+            "rows": int(len(frame)),
+            "columns": [str(c) for c in frame.columns],
+            "dtypes": {str(c): str(frame[c].dtype) for c in frame.columns},
+            "missing": {str(c): int(frame[c].isna().sum()) for c in frame.columns},
+            "duplicate_rows": int(frame.duplicated().sum()),
+            "sample": sample,
+        }
+    return profile
+
+
+ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "status": {"type": "string", "enum": ["READY", "CANNOT_DETERMINE"]},
+        "reason": {"type": "string"},
+        "code": {"type": "string"},
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+        "used_tables": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["status", "reason", "code", "assumptions", "used_tables"],
+    "additionalProperties": False,
+}
+
+
+SYSTEM_PROMPT = """You are ProofIQ's analysis planner. You receive a user's question and factual profiles of pandas DataFrames already loaded in a dictionary named dfs.
+
+Each uploaded file is authoritative for the user's question. Each profile's `rows` value is the complete DataFrame row count, and every one of those rows is loaded in `dfs`. Its `sample` field is merely a three-row schema preview. Never infer that a dataset is incomplete because the filename/table name contains the word "sample", because only three preview records are shown, or because the table is small. A total, average, count, filter, or grouping is READY whenever its required columns exist. The user is asking about the uploaded data, not an unknown larger real-world dataset.
+
+Decide whether the requested answer is supported by the available columns and rows. If essential data is missing, return CANNOT_DETERMINE and empty code. Never invent columns, joins, units, dates, or business definitions.
+
+If supported, return short, rerunnable Python/pandas code. The code runs with pd, np, and dfs already defined. It must:
+1. use only provided table keys and exact column names;
+2. perform joins explicitly when needed;
+3. assign a JSON-serializable final value to `result`;
+4. assign a list of evidence records to `evidence` (max 20 rows);
+5. assign a list of data-quality notes to `quality_notes`;
+6. not import, open files, access the network/environment, use eval/exec/compile, or catch broad exceptions.
+
+Prefer transparent pandas operations. Convert dates with pd.to_datetime(..., errors='coerce'). Use numeric coercion when appropriate. Keep code under 40 lines. Do not format numbers into unsupported currency units."""
+
+# A concrete syntax example keeps small local models from producing prose or
+# malformed comprehensions. Table and column names below are illustrative only.
+SYSTEM_PROMPT += """
+
+Code syntax example (replace names and operations to match the actual profile):
+df = dfs["table_key"]
+result = float(df["Amount"].sum())
+evidence = [{"metric": "sum", "value": result, "rows_used": int(len(df))}]
+quality_notes = []
+
+Never write imports. Never use a bare `for` after an assignment. `evidence` must be
+a normal list of dictionaries, not a generator or malformed comprehension.
+"""
+
+
+def _create_openai_plan(question, profile):
+    client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    try:
+        response = client.responses.create(
+            model=settings.OPENAI_MODEL,
+            instructions=SYSTEM_PROMPT,
+            input=json.dumps({"question": question, "data_profile": profile}, ensure_ascii=False),
+            text={"format": {"type": "json_schema", "name": "analysis_plan", "strict": True, "schema": ANALYSIS_SCHEMA}},
+        )
+    except APIConnectionError as exc:
+        raise RuntimeError("The AI service could not be reached. Check the server's internet connection and retry.") from exc
+    except APIStatusError as exc:
+        api_code = getattr(exc, "code", "") or ""
+        body = getattr(exc, "body", {}) or {}
+        nested_code = body.get("code", "") if isinstance(body, dict) else ""
+        if "billing" in f"{api_code} {nested_code} {exc}".lower() or nested_code == "insufficient_quota":
+            raise RuntimeError("OpenAI API billing is not active for this project. Enable billing, then retry—no hard-coded answer was substituted.") from exc
+        raise RuntimeError(f"The AI service rejected this run ({exc.status_code}). Check model/project access and retry.") from exc
+    plan = json.loads(response.output_text)
+    plan["provider_label"] = f"OpenAI · {settings.OPENAI_MODEL}"
+    return plan
+
+
+def _ollama_request(path, payload=None, timeout=180):
+    base = settings.OLLAMA_URL
+    if base not in {"http://127.0.0.1:11434", "http://localhost:11434"}:
+        raise RuntimeError("OLLAMA_URL must point to the local Ollama server on port 11434.")
+    data = None if payload is None else json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base}{path}", data=data,
+        headers={"Content-Type": "application/json"},
+        method="GET" if payload is None else "POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise RuntimeError(
+            "The local Ollama service is not reachable. Start it with `ollama serve`, then retry."
+        ) from exc
+
+
+def ollama_status():
+    try:
+        tags = _ollama_request("/api/tags", timeout=2)
+        installed = {item.get("name", "") for item in tags.get("models", [])}
+        model = settings.OLLAMA_MODEL
+        ready = model in installed or any(name.split(":")[0] == model.split(":")[0] for name in installed)
+        return {"online": True, "ready": ready, "model": model}
+    except RuntimeError:
+        return {"online": False, "ready": False, "model": settings.OLLAMA_MODEL}
+
+
+def _create_ollama_plan(question, profile):
+    response = _ollama_request("/api/chat", {
+        "model": settings.OLLAMA_MODEL,
+        "messages": [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps({"question": question, "data_profile": profile}, ensure_ascii=False)},
+        ],
+        "stream": False,
+        "think": False,
+        "format": ANALYSIS_SCHEMA,
+        "options": {"temperature": 0, "seed": 42, "num_ctx": 4096, "num_predict": 900},
+    })
+    try:
+        plan = json.loads(response["message"]["content"])
+    except (KeyError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("The local model returned an invalid analysis plan. Please retry.") from exc
+    # The model occasionally repeats an import even though pandas is already
+    # provided by the isolated worker. Imports are never needed or permitted.
+    if plan.get("status") == "READY" and isinstance(plan.get("code"), str):
+        plan["code"] = "\n".join(
+            line for line in plan["code"].splitlines()
+            if not line.strip().startswith(("import ", "from "))
+        ).strip()
+    plan["provider_label"] = f"Ollama / {settings.OLLAMA_MODEL} (local)"
+    return plan
+
+
+def create_plan(question, profile):
+    normalized_columns = {
+        str(column).strip().casefold().replace("_", " ")
+        for table in profile.values()
+        for column in table.get("columns", [])
+    }
+    question_words = set(re.findall(r"[a-z]+", question.casefold()))
+    if question_words.intersection({"profit", "profits", "margin", "margins"}):
+        has_profit = any("profit" in column or "margin" in column for column in normalized_columns)
+        has_cost = any("cost" in column or "expense" in column for column in normalized_columns)
+        if not has_profit and not has_cost:
+            return {
+                "status": "CANNOT_DETERMINE",
+                "reason": "Profit requires a profit, margin, cost, or expense field. The uploaded data contains sales revenue but no cost/profit data, so ProofIQ will not invent it.",
+                "code": "",
+                "assumptions": [],
+                "used_tables": [],
+                "provider_label": f"Ollama / {settings.OLLAMA_MODEL} (local) + deterministic answerability guard",
+            }
+    provider = settings.AI_PROVIDER
+    if provider == "openai":
+        return _create_openai_plan(question, profile)
+    if provider != "ollama":
+        raise RuntimeError(f"Unsupported AI_PROVIDER: {provider}")
+    try:
+        return _create_ollama_plan(question, profile)
+    except RuntimeError:
+        if settings.AI_FALLBACK_PROVIDER == "openai":
+            return _create_openai_plan(question, profile)
+        raise
+
+
+BLOCKED_NODES = (ast.Import, ast.ImportFrom, ast.With, ast.AsyncWith, ast.Lambda, ast.ClassDef, ast.FunctionDef,
+                 ast.AsyncFunctionDef, ast.Global, ast.Nonlocal, ast.Delete, ast.Raise, ast.Try)
+BLOCKED_NAMES = {"open", "eval", "exec", "compile", "input", "help", "globals", "locals", "vars", "dir",
+                 "getattr", "setattr", "delattr", "__import__", "os", "sys", "subprocess", "pathlib", "socket"}
+
+
+def validate_code(code):
+    if len(code) > 8_000:
+        raise ValueError("Generated analysis is too long.")
+    tree = ast.parse(code, mode="exec")
+    for node in ast.walk(tree):
+        if isinstance(node, BLOCKED_NODES):
+            raise ValueError(f"Blocked Python construct: {type(node).__name__}")
+        if isinstance(node, ast.Name) and node.id in BLOCKED_NAMES:
+            raise ValueError(f"Blocked name: {node.id}")
+        if isinstance(node, ast.Attribute) and node.attr.startswith("_"):
+            raise ValueError("Private/dunder attribute access is blocked.")
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in BLOCKED_NAMES:
+            raise ValueError(f"Blocked call: {node.func.id}")
+    assigned = {node.targets[0].id for node in ast.walk(tree) if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)}
+    missing = {"result", "evidence", "quality_notes"} - assigned
+    if missing:
+        raise ValueError(f"Generated code did not assign: {', '.join(sorted(missing))}")
+
+
+def execute_plan(code, tables):
+    validate_code(code)
+    with tempfile.TemporaryDirectory(prefix="dataguard_") as temp_dir:
+        temp = Path(temp_dir)
+        manifest = {}
+        for key, frame in tables.items():
+            path = temp / f"{safe_name(key)}.json"
+            frame.to_json(path, orient="table", date_format="iso")
+            manifest[key] = str(path)
+        payload_path = temp / "payload.json"
+        output_path = temp / "output.json"
+        payload_path.write_text(json.dumps({"manifest": manifest, "code": code}), encoding="utf-8")
+        worker = Path(__file__).with_name("worker.py")
+        env = {"PATH": os.environ.get("PATH", ""), "PYTHONIOENCODING": "utf-8"}
+        completed = subprocess.run(
+            [sys.executable, "-I", str(worker), str(payload_path), str(output_path)],
+            capture_output=True, text=True, timeout=12, cwd=temp, env=env,
+        )
+        if completed.returncode != 0:
+            message = (completed.stderr or completed.stdout or "Analysis execution failed.")[-1000:]
+            raise RuntimeError(message)
+        return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+def verify_result(execution):
+    checks = [
+        {"label": "Generated code passed safety checks", "ok": True},
+        {"label": "Code executed successfully", "ok": True},
+        {"label": "Result is JSON-serializable", "ok": True},
+    ]
+    notes = execution.get("quality_notes") or []
+    checks.append({"label": "No reported data-quality warning", "ok": not notes})
+    return checks

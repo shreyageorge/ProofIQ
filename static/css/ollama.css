@@ -1,0 +1,4 @@
+.status-dot.offline {
+  background: var(--orange);
+  box-shadow: 0 0 12px var(--orange);
+}

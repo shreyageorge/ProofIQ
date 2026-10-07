@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+.streamlit/secrets.toml
+
+# Uploaded/private data
+data/uploads/
+data/private/
+
+# Streamlit
+.streamlit/*
+!.streamlit/config.toml
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Generated files
+*.log
+db.sqlite3
+media/
+.venv-broken/
+.ollama-runtime/
+.ollama-models/
+.ollama-user/
+*.zip
+*.bundle

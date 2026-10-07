@@ -1,0 +1,4 @@
+region,amount,active
+North,100,true
+South,200,false
+North,150,true
