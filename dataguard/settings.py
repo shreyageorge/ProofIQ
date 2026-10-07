@@ -64,6 +64,13 @@ OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 
+# A Vercel Function cannot reach the Ollama process on a developer's laptop.
+# Select Ollama Cloud automatically in production unless explicitly overridden.
+if os.getenv("VERCEL") and "OLLAMA_URL" not in os.environ:
+    OLLAMA_URL = "https://ollama.com"
+if os.getenv("VERCEL") and "OLLAMA_MODEL" not in os.environ:
+    OLLAMA_MODEL = "gpt-oss:120b-cloud"
+
 if os.getenv("VERCEL"):
     DEBUG = False
     SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
