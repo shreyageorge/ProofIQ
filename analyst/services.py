@@ -106,6 +106,90 @@ def summarize_missing_data(profile):
     }
 
 
+def create_deterministic_plan(question, profile):
+    """Plan common audit-friendly aggregations without depending on model output."""
+    query = question.casefold()
+    aggregate = None
+    if any(word in query for word in ("total", "sum")):
+        aggregate = "sum"
+    elif any(word in query for word in ("average", "mean")):
+        aggregate = "mean"
+    elif any(word in query for word in ("highest", "top", "maximum", "max")):
+        aggregate = "sum"
+    if aggregate is None:
+        return None
+
+    table_name = metric = None
+    metric_aliases = {
+        "sales": ("sales", "revenue", "amount"),
+        "rating": ("rating",),
+        "quantity": ("quantity", "units"),
+        "price": ("price",),
+    }
+    for candidate_table, details in profile.items():
+        for column in details.get("columns", []):
+            normalized = str(column).casefold().replace("_", " ")
+            if any(
+                alias in query and (kind in normalized or alias in normalized)
+                for kind, aliases in metric_aliases.items()
+                for alias in aliases
+            ):
+                table_name, metric = candidate_table, str(column)
+                break
+        if metric:
+            break
+    if not metric:
+        return None
+
+    group_column = None
+    for column in profile[table_name].get("columns", []):
+        normalized = str(column).casefold().replace("_", " ")
+        if re.search(rf"\bby\s+(?:each\s+)?{re.escape(normalized)}\b", query):
+            group_column = str(column)
+            break
+        if any(word in query for word in ("highest", "top")) and normalized in query:
+            group_column = str(column)
+            break
+
+    table_literal, metric_literal = repr(table_name), repr(metric)
+    if group_column:
+        group_literal = repr(group_column)
+        code = (
+            f"df = dfs[{table_literal}]\n"
+            f"working = df[[{group_literal}, {metric_literal}]].copy()\n"
+            f"working[{metric_literal}] = pd.to_numeric(working[{metric_literal}], errors='coerce')\n"
+            f"grouped = working.dropna(subset=[{group_literal}, {metric_literal}]).groupby({group_literal}, as_index=False)[{metric_literal}].{aggregate}()\n"
+            f"grouped = grouped.sort_values({metric_literal}, ascending=False)\n"
+        )
+        if any(word in query for word in ("highest", "top", "maximum", "max")):
+            code += (
+                "winner = grouped.iloc[0]\n"
+                f"result = {{{group_literal}: winner[{group_literal}], {metric_literal}: float(winner[{metric_literal}])}}\n"
+            )
+        else:
+            code += (
+                "result = {str(row[" + group_literal + "]): float(row[" +
+                metric_literal + "]) for _, row in grouped.iterrows()}\n"
+            )
+        code += "evidence = grouped.head(20).to_dict('records')\nquality_notes = []"
+    else:
+        code = (
+            f"df = dfs[{table_literal}]\n"
+            f"values = pd.to_numeric(df[{metric_literal}], errors='coerce')\n"
+            f"result = float(values.{aggregate}())\n"
+            f"evidence = [{{'table': {table_literal}, 'metric': {metric_literal}, 'operation': '{aggregate}', 'value': result, 'rows_used': int(values.notna().sum())}}]\n"
+            "quality_notes = []"
+        )
+    return {
+        "status": "READY",
+        "reason": "The requested aggregation is supported directly by the uploaded columns.",
+        "code": code,
+        "assumptions": [],
+        "used_tables": [table_name],
+        "provider_label": "ProofIQ deterministic planner (verified pandas)",
+    }
+
+
 ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -350,6 +434,9 @@ def create_plan(question, profile, *, execution_error=None):
                     "+ deterministic answerability guard"
                 ),
             }
+    deterministic = create_deterministic_plan(question, profile)
+    if deterministic:
+        return deterministic
     provider = settings.AI_PROVIDER
     if provider == "openai":
         return _create_openai_plan(question, profile, execution_error)

@@ -12,6 +12,7 @@ from openpyxl import Workbook
 from .services import (
     _create_ollama_plan,
     _ollama_request,
+    create_deterministic_plan,
     create_plan,
     execute_plan,
     is_invalid_completeness_refusal,
@@ -72,6 +73,21 @@ class AnalystCoreTests(TestCase):
         self.assertEqual(plan["status"], "CANNOT_DETERMINE")
         self.assertEqual(plan["code"], "")
         self.assertIn("no cost/profit data", plan["reason"])
+
+    def test_deterministic_total_sales_plan_executes(self):
+        plan = create_deterministic_plan(
+            "What is the total sales?", profile_tables(self.tables, self.sources)
+        )
+        output = execute_plan(plan["code"], self.tables)
+        self.assertEqual(output["result"], 564800.0)
+
+    def test_deterministic_sales_by_region_plan_executes(self):
+        plan = create_deterministic_plan(
+            "What is the total sales by region?",
+            profile_tables(self.tables, self.sources),
+        )
+        output = execute_plan(plan["code"], self.tables)
+        self.assertEqual(output["result"]["South"], 232000.0)
 
     @override_settings(
         OLLAMA_URL="https://ollama.com",
