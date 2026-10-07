@@ -40,9 +40,9 @@
         </form>
         {% if files %}
         <div class="file-list">
-          {% for file in files %}<div class="file"><div class="file-icon">{{ file.name|slice:"-3:"|upper }}</div><div><strong>{{ file.name }}</strong><span>{{ file.size|filesizeformat }}</span></div><form action="{% url 'delete_file' forloop.counter0 %}" method="post" class="remove-file-form">{% csrf_token %}<button type="submit" class="remove-file" aria-label="Remove {{ file.name }}" title="Remove this file">×</button></form></div>{% endfor %}
+          {% for file in files %}<div class="file"><div class="file-icon">{{ file.name|slice:"-3:"|upper }}</div><div><strong>{{ file.name }}</strong><span>{{ file.size|filesizeformat }}</span></div><form action="{% url 'delete_file' forloop.counter0 %}" method="post" class="remove-file-form" data-filename="{{ file.name }}">{% csrf_token %}<button type="submit" class="remove-file" aria-label="Remove {{ file.name }}" title="Remove this file">×</button></form></div>{% endfor %}
         </div>
-        <form action="{% url 'clear' %}" method="post">{% csrf_token %}<button class="text-button">Clear workspace</button></form>
+        <form action="{% url 'clear' %}" method="post" id="clear-form">{% csrf_token %}<button class="text-button">Clear workspace</button></form>
         {% endif %}
 
         {% if profile %}
@@ -60,7 +60,7 @@
       <section class="main-panel">
         <div class="ask card">
           <div class="card-head"><span>02</span><div><h2>Ask your data</h2><p>The agent decides which tables and operations it needs.</p></div></div>
-          <form action="{% url 'ask' %}" method="post" id="ask-form">
+          <form action="{% url 'ask' %}" method="post" enctype="multipart/form-data" id="ask-form">
             {% csrf_token %}
             <div class="question-box"><textarea name="question" required placeholder="e.g. Which region had the highest revenue in Q2?">{{ question }}</textarea><button type="submit">Run analysis <b>→</b></button></div>
           </form>

@@ -1,4 +1,5 @@
 import shutil
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -74,11 +75,28 @@ def ask_question(request):
     question = request.POST.get("question", "").strip()
     records = _records(request)
     context = {"files": records, "question": question, "ollama": ollama_status()}
-    if not question or not records:
+    request_uploads = request.FILES.getlist("datasets")
+    if not question or (not records and not request_uploads):
         messages.error(request, "Upload data and enter a question first.")
         return HttpResponseRedirect(reverse("dashboard"))
+    temporary_directory = None
     try:
-        tables, sources = load_tables(records)
+        analysis_records = records
+        if request_uploads:
+            temporary_directory = tempfile.TemporaryDirectory(prefix="proofiq-analysis-")
+            analysis_records = []
+            for upload in request_uploads:
+                suffix = Path(upload.name).suffix.lower()
+                if suffix not in ALLOWED_SUFFIXES:
+                    raise ValueError(f"Unsupported file type: {upload.name}")
+                if upload.size > 15 * 1024 * 1024:
+                    raise ValueError(f"{upload.name} exceeds the 15 MB limit.")
+                path = Path(temporary_directory.name) / f"{uuid.uuid4().hex}{suffix}"
+                with path.open("wb") as destination:
+                    for chunk in upload.chunks():
+                        destination.write(chunk)
+                analysis_records.append({"name": Path(upload.name).name, "path": str(path), "size": upload.size})
+        tables, sources = load_tables(analysis_records)
         profile = profile_tables(tables, sources)
         context["profile"] = profile
         plan = create_plan(question, profile)
@@ -91,6 +109,9 @@ def ask_question(request):
             context["checks"] = verify_result(execution)
     except Exception as exc:
         context["analysis_error"] = str(exc)
+    finally:
+        if temporary_directory is not None:
+            temporary_directory.cleanup()
     return render(request, "analyst/dashboard.html", context)
 
 

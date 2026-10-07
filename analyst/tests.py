@@ -114,6 +114,38 @@ class AnalystCoreTests(TestCase):
                 self.assertEqual(len(session["uploaded_files"]), 1)
                 self.assertTrue(Path(session["uploaded_files"][0]["path"]).is_file())
 
+    @override_settings(AI_PROVIDER="ollama")
+    @patch("analyst.views.create_plan")
+    def test_ask_can_analyze_file_sent_with_same_serverless_request(self, create_plan_mock):
+        create_plan_mock.return_value = {
+            "status": "CANNOT_DETERMINE",
+            "reason": "test response",
+            "code": "",
+            "assumptions": [],
+            "used_tables": [],
+            "provider_label": "test",
+        }
+        with patch(
+            "analyst.views.ollama_status",
+            return_value={"online": True, "ready": True, "model": "test"},
+        ):
+            response = self.client.post(
+                reverse("ask"),
+                {
+                    "question": "What are total sales?",
+                    "datasets": SimpleUploadedFile(
+                        "request.csv",
+                        b"region,sales\nNorth,10\n",
+                        content_type="text/csv",
+                    ),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "test response")
+        profile = create_plan_mock.call_args.args[1]
+        self.assertEqual(profile["request"]["rows"], 1)
+
     def test_xlsx_can_be_removed_after_dashboard_profiles_it(self):
         workbook = Workbook()
         sheet = workbook.active
