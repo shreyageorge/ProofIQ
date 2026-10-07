@@ -17,6 +17,15 @@ def _records(request):
     return request.session.get("uploaded_files", [])
 
 
+def _workspace_id(request):
+    """Return a filesystem-safe ID that also works with signed-cookie sessions."""
+    workspace_id = request.session.get("workspace_id")
+    if not workspace_id:
+        workspace_id = uuid.uuid4().hex
+        request.session["workspace_id"] = workspace_id
+    return workspace_id
+
+
 def _is_managed_upload(path):
     upload_root = (Path(settings.MEDIA_ROOT) / "uploads").resolve()
     resolved = Path(path).resolve()
@@ -41,9 +50,7 @@ def upload_files(request):
     if not uploads:
         messages.error(request, "Choose at least one CSV or Excel file.")
         return HttpResponseRedirect(reverse("dashboard"))
-    if not request.session.session_key:
-        request.session.create()
-    folder = Path(settings.MEDIA_ROOT) / "uploads" / request.session.session_key
+    folder = Path(settings.MEDIA_ROOT) / "uploads" / _workspace_id(request)
     folder.mkdir(parents=True, exist_ok=True)
     storage = FileSystemStorage(location=folder)
     records = _records(request)

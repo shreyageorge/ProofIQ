@@ -70,6 +70,29 @@ class AnalystCoreTests(TestCase):
                     self.assertFalse(stored_path.exists())
                     self.assertEqual(self.client.session["uploaded_files"], [])
 
+    def test_upload_works_with_vercel_signed_cookie_sessions(self):
+        with TemporaryDirectory() as media_root:
+            with override_settings(
+                MEDIA_ROOT=media_root,
+                SESSION_ENGINE="django.contrib.sessions.backends.signed_cookies",
+            ):
+                response = self.client.post(
+                    reverse("upload"),
+                    {
+                        "datasets": SimpleUploadedFile(
+                            "vercel.csv",
+                            b"region,sales\nNorth,10\n",
+                            content_type="text/csv",
+                        )
+                    },
+                )
+
+                self.assertEqual(response.status_code, 302)
+                session = self.client.session
+                self.assertRegex(session["workspace_id"], r"^[0-9a-f]{32}$")
+                self.assertEqual(len(session["uploaded_files"]), 1)
+                self.assertTrue(Path(session["uploaded_files"][0]["path"]).is_file())
+
     def test_xlsx_can_be_removed_after_dashboard_profiles_it(self):
         workbook = Workbook()
         sheet = workbook.active
