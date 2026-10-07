@@ -263,10 +263,34 @@ def _create_ollama_plan(question, profile, execution_error=None):
         "format": ANALYSIS_SCHEMA,
         "options": {"temperature": 0, "seed": 42, "num_ctx": 4096, "num_predict": 900},
     })
-    try:
-        plan = json.loads(response["message"]["content"])
-    except (KeyError, TypeError, json.JSONDecodeError) as exc:
-        raise RuntimeError("The local model returned an invalid analysis plan. Please retry.") from exc
+    message = response.get("message", {}) if isinstance(response, dict) else {}
+    candidates = [
+        message.get("content"),
+        message.get("thinking"),
+        response.get("response") if isinstance(response, dict) else None,
+    ]
+    plan = None
+    for candidate in candidates:
+        if isinstance(candidate, dict):
+            plan = candidate
+            break
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate.strip(), flags=re.IGNORECASE)
+        try:
+            plan = json.loads(cleaned)
+            break
+        except json.JSONDecodeError:
+            start = cleaned.find("{")
+            if start >= 0:
+                try:
+                    plan, _ = json.JSONDecoder().raw_decode(cleaned[start:])
+                    break
+                except json.JSONDecodeError:
+                    continue
+    if not isinstance(plan, dict):
+        location = "cloud" if settings.OLLAMA_URL == "https://ollama.com" else "local"
+        raise RuntimeError(f"Ollama {location} returned an invalid analysis plan. Please retry.")
     # The model occasionally repeats an import even though pandas is already
     # provided by the isolated worker. Imports are never needed or permitted.
     if plan.get("status") == "READY" and isinstance(plan.get("code"), str):

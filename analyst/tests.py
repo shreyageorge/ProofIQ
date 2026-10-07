@@ -9,6 +9,7 @@ from django.urls import reverse
 from openpyxl import Workbook
 
 from .services import (
+    _create_ollama_plan,
     _ollama_request,
     create_plan,
     execute_plan,
@@ -91,6 +92,22 @@ class AnalystCoreTests(TestCase):
     def test_ollama_cloud_requires_api_key(self):
         with self.assertRaisesRegex(RuntimeError, "OLLAMA_API_KEY is missing"):
             _ollama_request("/api/chat", {"model": "test"})
+
+    @override_settings(OLLAMA_URL="https://ollama.com", OLLAMA_MODEL="test")
+    @patch("analyst.services._ollama_request")
+    def test_ollama_cloud_accepts_json_from_thinking_field(self, request_mock):
+        request_mock.return_value = {
+            "message": {
+                "content": "",
+                "thinking": "Here is the plan:\n```json\n"
+                '{"status":"CANNOT_DETERMINE","reason":"missing",'
+                '"code":"","assumptions":[],"used_tables":[]}\n```',
+            }
+        }
+
+        plan = _create_ollama_plan("question", {})
+
+        self.assertEqual(plan["status"], "CANNOT_DETERMINE")
 
     def test_uploaded_file_can_be_removed_from_workspace(self):
         with TemporaryDirectory() as media_root:
