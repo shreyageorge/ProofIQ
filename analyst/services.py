@@ -104,7 +104,13 @@ If supported, return short, rerunnable Python/pandas code. The code runs with pd
 5. assign a list of data-quality notes to `quality_notes`;
 6. not import, open files, access the network/environment, use eval/exec/compile, or catch broad exceptions.
 
-Prefer transparent pandas operations. Convert dates with pd.to_datetime(..., errors='coerce'). Use numeric coercion when appropriate. Keep code under 40 lines. Do not format numbers into unsupported currency units."""
+Prefer transparent pandas operations. Convert dates with pd.to_datetime(..., errors='coerce'). Use numeric coercion when appropriate. Keep code under 40 lines. Do not format numbers into unsupported currency units.
+
+For scalar questions such as total, average, minimum, or maximum, assign the
+scalar aggregation directly to result. Never index an aggregation result with
+[0] or another label: Series indexing uses labels and commonly raises KeyError.
+For example, use result = float(df["Amount"].sum()), not
+result = df["Amount"].sum()[0]."""
 
 # A concrete syntax example keeps small local models from producing prose or
 # malformed comprehensions. Table and column names below are illustrative only.
@@ -121,13 +127,16 @@ a normal list of dictionaries, not a generator or malformed comprehension.
 """
 
 
-def _create_openai_plan(question, profile):
+def _create_openai_plan(question, profile, execution_error=None):
     client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+    planner_input = {"question": question, "data_profile": profile}
+    if execution_error:
+        planner_input["previous_execution_error"] = execution_error
     try:
         response = client.responses.create(
             model=settings.OPENAI_MODEL,
             instructions=SYSTEM_PROMPT,
-            input=json.dumps({"question": question, "data_profile": profile}, ensure_ascii=False),
+            input=json.dumps(planner_input, ensure_ascii=False),
             text={"format": {"type": "json_schema", "name": "analysis_plan", "strict": True, "schema": ANALYSIS_SCHEMA}},
         )
     except APIConnectionError as exc:
@@ -203,12 +212,15 @@ def ollama_status():
         return {"online": False, "ready": False, "model": settings.OLLAMA_MODEL}
 
 
-def _create_ollama_plan(question, profile):
+def _create_ollama_plan(question, profile, execution_error=None):
+    planner_input = {"question": question, "data_profile": profile}
+    if execution_error:
+        planner_input["previous_execution_error"] = execution_error
     response = _ollama_request("/api/chat", {
         "model": settings.OLLAMA_MODEL,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": json.dumps({"question": question, "data_profile": profile}, ensure_ascii=False)},
+            {"role": "user", "content": json.dumps(planner_input, ensure_ascii=False)},
         ],
         "stream": False,
         "think": False,
@@ -231,7 +243,7 @@ def _create_ollama_plan(question, profile):
     return plan
 
 
-def create_plan(question, profile):
+def create_plan(question, profile, *, execution_error=None):
     normalized_columns = {
         str(column).strip().casefold().replace("_", " ")
         for table in profile.values()
@@ -256,14 +268,14 @@ def create_plan(question, profile):
             }
     provider = settings.AI_PROVIDER
     if provider == "openai":
-        return _create_openai_plan(question, profile)
+        return _create_openai_plan(question, profile, execution_error)
     if provider != "ollama":
         raise RuntimeError(f"Unsupported AI_PROVIDER: {provider}")
     try:
-        return _create_ollama_plan(question, profile)
+        return _create_ollama_plan(question, profile, execution_error)
     except RuntimeError:
         if settings.AI_FALLBACK_PROVIDER == "openai":
-            return _create_openai_plan(question, profile)
+            return _create_openai_plan(question, profile, execution_error)
         raise
 
 
@@ -311,8 +323,13 @@ def execute_plan(code, tables):
             capture_output=True, text=True, timeout=12, cwd=temp, env=env,
         )
         if completed.returncode != 0:
-            message = (completed.stderr or completed.stdout or "Analysis execution failed.")[-1000:]
-            raise RuntimeError(message)
+            output = completed.stderr or completed.stdout or ""
+            error_match = re.search(
+                r"\b([A-Za-z_][A-Za-z0-9_]*(?:Error|Exception))(?::|\b)",
+                output,
+            )
+            error_type = error_match.group(1) if error_match else "execution error"
+            raise RuntimeError(f"Generated pandas analysis failed ({error_type}).")
         return json.loads(output_path.read_text(encoding="utf-8"))
 
 

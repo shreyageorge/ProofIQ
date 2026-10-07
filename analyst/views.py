@@ -36,9 +36,10 @@ def _is_managed_upload(path):
 def dashboard(request):
     records = _records(request)
     profile = {}
-    if records:
+    available_records = [record for record in records if Path(record["path"]).is_file()]
+    if available_records:
         try:
-            tables, sources = load_tables(records)
+            tables, sources = load_tables(available_records)
             profile = profile_tables(tables, sources)
         except Exception as exc:
             messages.error(request, f"Could not inspect a dataset: {exc}")
@@ -54,7 +55,10 @@ def upload_files(request):
     folder = Path(settings.MEDIA_ROOT) / "uploads" / _workspace_id(request)
     folder.mkdir(parents=True, exist_ok=True)
     storage = FileSystemStorage(location=folder)
-    records = _records(request)
+    # Vercel's /tmp filesystem is scoped to one function invocation. Replace
+    # stale metadata there; the browser retains the real File objects and sends
+    # them again with every analysis request.
+    records = [] if settings.IS_VERCEL else _records(request)
     for upload in uploads:
         suffix = Path(upload.name).suffix.lower()
         if suffix not in ALLOWED_SUFFIXES:
@@ -67,6 +71,8 @@ def upload_files(request):
         records.append({"name": Path(upload.name).name, "path": str(folder / stored), "size": upload.size})
     request.session["uploaded_files"] = records
     messages.success(request, f"Loaded {len(records)} dataset file(s).")
+    if settings.IS_VERCEL:
+        return dashboard(request)
     return HttpResponseRedirect(reverse("dashboard"))
 
 
@@ -104,7 +110,19 @@ def ask_question(request):
         if plan["status"] == "CANNOT_DETERMINE":
             context["cannot_determine"] = True
         else:
-            execution = execute_plan(plan["code"], tables)
+            try:
+                execution = execute_plan(plan["code"], tables)
+            except (RuntimeError, ValueError, SyntaxError) as first_error:
+                plan = create_plan(
+                    question,
+                    profile,
+                    execution_error=str(first_error),
+                )
+                context["plan"] = plan
+                if plan["status"] == "CANNOT_DETERMINE":
+                    context["cannot_determine"] = True
+                    return render(request, "analyst/dashboard.html", context)
+                execution = execute_plan(plan["code"], tables)
             context["execution"] = execution
             context["checks"] = verify_result(execution)
     except Exception as exc:

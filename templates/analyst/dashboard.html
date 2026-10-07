@@ -64,7 +64,7 @@
             {% csrf_token %}
             <div class="question-box"><textarea name="question" required placeholder="e.g. Which region had the highest revenue in Q2?">{{ question }}</textarea><button type="submit">Run analysis <b>→</b></button></div>
           </form>
-          <div class="suggestions"><span>Try:</span><button data-question="What is the total sales by region?">Sales by region</button><button data-question="Which product has the highest total sales?">Top product</button><button data-question="What is the profit for each product?">Missing-data test</button></div>
+          <div class="suggestions"><span>Try:</span><button type="button" data-question="What is the total sales by region?">Sales by region</button><button type="button" data-question="Which product has the highest total sales?">Top product</button><button type="button" data-question="What is the profit for each product?">Missing-data test</button></div>
         </div>
 
         {% if analysis_error %}<div class="result card error-card"><div class="result-label">ANALYSIS INTERRUPTED</div><h2>We couldn't complete this run.</h2><p>{{ analysis_error }}</p></div>{% endif %}

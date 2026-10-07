@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env.local")
+IS_VERCEL = bool(os.getenv("VERCEL"))
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "hackathon-local-only-change-me")
 DEBUG = os.getenv("DJANGO_DEBUG", "true").lower() == "true"
@@ -52,7 +53,7 @@ STORAGES = {
         "BACKEND": "whitenoise.storage.CompressedManifestStaticFilesStorage"
     },
 }
-MEDIA_ROOT = Path("/tmp/proofiq-media") if os.getenv("VERCEL") else BASE_DIR / "media"
+MEDIA_ROOT = Path("/tmp/proofiq-media") if IS_VERCEL else BASE_DIR / "media"
 MEDIA_URL = "media/"
 DEFAULT_AUTO_FIELD = "django.db.models.BigAutoField"
 FILE_UPLOAD_MAX_MEMORY_SIZE = 10 * 1024 * 1024
@@ -66,12 +67,12 @@ OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
 
 # A Vercel Function cannot reach the Ollama process on a developer's laptop.
 # Select Ollama Cloud automatically in production unless explicitly overridden.
-if os.getenv("VERCEL") and "OLLAMA_URL" not in os.environ:
+if IS_VERCEL and "OLLAMA_URL" not in os.environ:
     OLLAMA_URL = "https://ollama.com"
-if os.getenv("VERCEL") and "OLLAMA_MODEL" not in os.environ:
+if IS_VERCEL and "OLLAMA_MODEL" not in os.environ:
     OLLAMA_MODEL = "gpt-oss:120b-cloud"
 
-if os.getenv("VERCEL"):
+if IS_VERCEL:
     DEBUG = False
     SESSION_ENGINE = "django.contrib.sessions.backends.signed_cookies"
     SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")

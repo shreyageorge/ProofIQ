@@ -16,6 +16,7 @@ async function saveDatasets(files) {
   await new Promise((resolve, reject) => {
     const transaction = db.transaction(STORE_NAME, 'readwrite');
     const store = transaction.objectStore(STORE_NAME);
+    store.clear();
     Array.from(files).forEach(file => store.put({
       id: `${file.name}:${file.size}:${file.lastModified}`,
       file,
@@ -70,9 +71,15 @@ if (upload) upload.addEventListener('change', async () => {
   await saveDatasets(upload.files);
   document.querySelector('#upload-form').submit();
 });
-document.querySelectorAll('[data-question]').forEach(button => button.addEventListener('click', () => {
-  const area = document.querySelector('textarea[name="question"]'); area.value = button.dataset.question; area.focus();
-}));
+document.addEventListener('click', event => {
+  const button = event.target.closest('[data-question]');
+  if (!button) return;
+  const area = document.querySelector('textarea[name="question"]');
+  if (!area) return;
+  area.value = button.dataset.question;
+  area.dispatchEvent(new Event('input', { bubbles: true }));
+  area.focus();
+});
 const ask = document.querySelector('#ask-form');
 if (ask) ask.addEventListener('submit', async event => {
   event.preventDefault();

@@ -21,6 +21,20 @@ class AnalystCoreTests(TestCase):
         output = execute_plan(code, self.tables)
         self.assertEqual(output["result"], 564800.0)
 
+    def test_scalar_aggregate_is_not_indexed_and_reports_safe_error(self):
+        code = (
+            "df = dfs['sample_sales']\n"
+            "result = df['Sales'].sum()[0]\n"
+            "evidence = []\n"
+            "quality_notes = []"
+        )
+
+        with self.assertRaisesRegex(
+            RuntimeError,
+            r"Generated pandas analysis failed \((?:KeyError|IndexError)\)\.",
+        ):
+            execute_plan(code, self.tables)
+
     def test_profile_reports_shape(self):
         profile = profile_tables(self.tables, self.sources)["sample_sales"]
         self.assertEqual(profile["rows"], 12)
@@ -114,6 +128,44 @@ class AnalystCoreTests(TestCase):
                 self.assertEqual(len(session["uploaded_files"]), 1)
                 self.assertTrue(Path(session["uploaded_files"][0]["path"]).is_file())
 
+    def test_dashboard_ignores_expired_serverless_temp_path(self):
+        session = self.client.session
+        session["uploaded_files"] = [
+            {"name": "expired.xlsx", "path": "/tmp/no-longer-present.xlsx", "size": 10}
+        ]
+        session.save()
+
+        with patch(
+            "analyst.views.ollama_status",
+            return_value={"online": True, "ready": True, "model": "test"},
+        ):
+            response = self.client.get(reverse("dashboard"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, "Could not inspect a dataset")
+
+    @override_settings(IS_VERCEL=True)
+    def test_vercel_upload_profiles_in_the_same_request(self):
+        with TemporaryDirectory() as media_root, override_settings(MEDIA_ROOT=media_root):
+            with patch(
+                "analyst.views.ollama_status",
+                return_value={"online": True, "ready": True, "model": "test"},
+            ):
+                response = self.client.post(
+                    reverse("upload"),
+                    {
+                        "datasets": SimpleUploadedFile(
+                            "serverless.csv",
+                            b"region,sales\nNorth,10\n",
+                            content_type="text/csv",
+                        )
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "serverless")
+        self.assertContains(response, "1 rows")
+
     @override_settings(AI_PROVIDER="ollama")
     @patch("analyst.views.create_plan")
     def test_ask_can_analyze_file_sent_with_same_serverless_request(self, create_plan_mock):
@@ -145,6 +197,60 @@ class AnalystCoreTests(TestCase):
         self.assertContains(response, "test response")
         profile = create_plan_mock.call_args.args[1]
         self.assertEqual(profile["request"]["rows"], 1)
+
+    @patch("analyst.views.create_plan")
+    def test_ask_replans_once_after_generated_code_execution_error(self, create_plan_mock):
+        create_plan_mock.side_effect = [
+            {
+                "status": "READY",
+                "reason": "Total sales",
+                "code": (
+                    "df = dfs['request']\n"
+                    "result = df['sales'].sum()[0]\n"
+                    "evidence = []\n"
+                    "quality_notes = []"
+                ),
+                "assumptions": [],
+                "used_tables": ["request"],
+            },
+            {
+                "status": "READY",
+                "reason": "Total sales",
+                "code": (
+                    "df = dfs['request']\n"
+                    "result = float(df['sales'].sum())\n"
+                    "evidence = [{'total_sales': result}]\n"
+                    "quality_notes = []"
+                ),
+                "assumptions": [],
+                "used_tables": ["request"],
+            },
+        ]
+
+        with patch(
+            "analyst.views.ollama_status",
+            return_value={"online": True, "ready": True, "model": "test"},
+        ):
+            response = self.client.post(
+                reverse("ask"),
+                {
+                    "question": "What are total sales?",
+                    "datasets": SimpleUploadedFile(
+                        "request.csv",
+                        b"region,sales\nNorth,10\nSouth,20\n",
+                        content_type="text/csv",
+                    ),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "30.0")
+        self.assertEqual(create_plan_mock.call_count, 2)
+        retry_call = create_plan_mock.call_args
+        self.assertRegex(
+            retry_call.kwargs["execution_error"],
+            r"Generated pandas analysis failed \((?:KeyError|IndexError)\)\.",
+        )
 
     def test_xlsx_can_be_removed_after_dashboard_profiles_it(self):
         workbook = Workbook()
