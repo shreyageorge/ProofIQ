@@ -76,6 +76,36 @@ def profile_tables(tables, sources):
     return profile
 
 
+def is_missing_data_question(question):
+    words = set(re.findall(r"[a-z]+", question.casefold()))
+    return (
+        "missing" in words and bool(words.intersection({"data", "value", "values", "column", "columns"}))
+    ) or bool(words.intersection({"nulls", "null", "missingness", "completeness"}))
+
+
+def summarize_missing_data(profile):
+    """Build a deterministic missing-value report from the existing table profiles."""
+    evidence = []
+    result_lines = []
+    for table_name, table in profile.items():
+        missing = table.get("missing", {})
+        columns = table.get("columns", [])
+        counts = [(column, int(missing.get(column, 0))) for column in columns]
+        evidence.extend(
+            {"table": table_name, "column": column, "missing_count": count}
+            for column, count in counts
+        )
+        counts_text = ", ".join(f"{column}: {count}" for column, count in counts)
+        result_lines.append(
+            f"{table_name} ({table.get('rows', 0)} rows): {counts_text or 'no columns'}"
+        )
+    return {
+        "result": "\n".join(result_lines) or "No tables are available to profile.",
+        "evidence": evidence,
+        "quality_notes": [],
+    }
+
+
 ANALYSIS_SCHEMA = {
     "type": "object",
     "properties": {
@@ -105,6 +135,12 @@ If supported, return short, rerunnable Python/pandas code. The code runs with pd
 6. not import, open files, access the network/environment, use eval/exec/compile, or catch broad exceptions.
 
 Prefer transparent pandas operations. Convert dates with pd.to_datetime(..., errors='coerce'). Use numeric coercion when appropriate. Keep code under 40 lines. Do not format numbers into unsupported currency units.
+
+For ranking questions such as "which product has the highest sales", assign a
+dictionary containing both the winning group label and its aggregated value to
+result. Sort the grouped evidence by the requested metric before selecting the
+winner. `quality_notes` is only for actual warnings; leave it empty when values
+are valid.
 
 For scalar questions such as total, average, minimum, or maximum, assign the
 scalar aggregation directly to result. Never index an aggregation result with
@@ -277,6 +313,26 @@ def create_plan(question, profile, *, execution_error=None):
         if settings.AI_FALLBACK_PROVIDER == "openai":
             return _create_openai_plan(question, profile, execution_error)
         raise
+
+
+def is_invalid_completeness_refusal(plan):
+    """Detect a model refusal that contradicts the complete-upload contract."""
+    if plan.get("status") != "CANNOT_DETERMINE":
+        return False
+    reason = str(plan.get("reason", "")).casefold()
+    return any(
+        phrase in reason
+        for phrase in (
+            "sample",
+            "small subset",
+            "only 12 rows",
+            "insufficient rows",
+            "larger dataset",
+            "entire dataset",
+            "full dataset",
+            "not represent the full",
+        )
+    )
 
 
 BLOCKED_NODES = (ast.Import, ast.ImportFrom, ast.With, ast.AsyncWith, ast.Lambda, ast.ClassDef, ast.FunctionDef,

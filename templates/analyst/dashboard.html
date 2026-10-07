@@ -64,7 +64,7 @@
             {% csrf_token %}
             <div class="question-box"><textarea name="question" required placeholder="e.g. Which region had the highest revenue in Q2?">{{ question }}</textarea><button type="submit">Run analysis <b>→</b></button></div>
           </form>
-          <div class="suggestions"><span>Try:</span><button type="button" data-question="What is the total sales by region?">Sales by region</button><button type="button" data-question="Which product has the highest total sales?">Top product</button><button type="button" data-question="What is the profit for each product?">Missing-data test</button></div>
+          <div class="suggestions"><span>Try:</span><button type="button" data-question="What is the total sales by region?">Sales by region</button><button type="button" data-question="Which product has the highest total sales?">Top product</button><button type="button" data-question="Which columns have missing values, and how many missing values does each column have?">Missing-data test</button></div>
         </div>
 
         {% if analysis_error %}<div class="result card error-card"><div class="result-label">ANALYSIS INTERRUPTED</div><h2>We couldn't complete this run.</h2><p>{{ analysis_error }}</p></div>{% endif %}
@@ -75,7 +75,7 @@
 
         {% if execution %}
         <div class="result card">
-          <div class="result-top"><div><div class="result-label">VERIFIED RESULT</div><h2>{{ execution.result }}</h2><p>{{ plan.reason }}</p></div><div class="seal"><span>✓</span>PROVED</div></div>
+          <div class="result-top"><div><div class="result-label">{% if plan.profile_result %}MISSING-DATA PROFILE{% else %}VERIFIED RESULT{% endif %}</div><h2>{{ execution.result }}</h2><p>{{ plan.reason }}</p></div><div class="seal"><span>✓</span>{% if plan.profile_result %}PROFILED{% else %}PROVED{% endif %}</div></div>
           {% if execution.evidence %}<div class="evidence"><h3>Evidence</h3><pre>{{ execution.evidence|pprint }}</pre></div>{% endif %}
           <div class="checks">{% for check in checks %}<div class="{% if check.ok %}pass{% else %}warn{% endif %}"><span>{% if check.ok %}✓{% else %}!{% endif %}</span>{{ check.label }}</div>{% endfor %}</div>
           {% if execution.quality_notes %}<div class="quality"><strong>Data-quality notes</strong>{% for note in execution.quality_notes %}<p>{{ note }}</p>{% endfor %}</div>{% endif %}

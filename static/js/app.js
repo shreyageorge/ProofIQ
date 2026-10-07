@@ -1,4 +1,3 @@
-const upload = document.querySelector('#datasets');
 const DB_NAME = 'proofiq-workspace';
 const STORE_NAME = 'datasets';
 
@@ -66,53 +65,66 @@ async function removeDatasetsByName(filename) {
   db.close();
 }
 
-if (upload) upload.addEventListener('change', async () => {
-  if (!upload.files.length) return;
-  await saveDatasets(upload.files);
-  document.querySelector('#upload-form').submit();
-});
-document.addEventListener('click', event => {
-  const button = event.target.closest('[data-question]');
-  if (!button) return;
-  const area = document.querySelector('textarea[name="question"]');
-  if (!area) return;
-  area.value = button.dataset.question;
-  area.dispatchEvent(new Event('input', { bubbles: true }));
-  area.focus();
-});
-const ask = document.querySelector('#ask-form');
-if (ask) ask.addEventListener('submit', async event => {
-  event.preventDefault();
-  document.querySelector('#loading').classList.add('show');
-  try {
-    const formData = new FormData(ask);
-    const datasets = await getDatasets();
-    datasets.forEach(dataset => formData.append('datasets', dataset.file, dataset.file.name));
-    const response = await fetch(ask.action, {
-      method: 'POST',
-      body: formData,
-      credentials: 'same-origin',
-      headers: { 'X-CSRFToken': formData.get('csrfmiddlewaretoken') },
-    });
-    if (!response.ok) throw new Error(`Analysis request failed (${response.status}).`);
-    document.open();
-    document.write(await response.text());
-    document.close();
-  } catch (error) {
-    document.querySelector('#loading').classList.remove('show');
-    window.alert(error.message);
-  }
-});
-const clearForm = document.querySelector('#clear-form');
-if (clearForm) clearForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  await clearDatasets();
-  clearForm.submit();
-});
-document.querySelectorAll('.remove-file-form').forEach(form => form.addEventListener('submit', async event => {
-  event.preventDefault();
-  await removeDatasetsByName(form.dataset.filename);
-  form.submit();
-}));
-const copy = document.querySelector('#copy-code');
-if (copy) copy.addEventListener('click', async () => { await navigator.clipboard.writeText(document.querySelector('#proof-code').innerText); copy.textContent = 'Copied ✓'; });
+function bindPageControls() {
+  const upload = document.querySelector('#datasets');
+  if (upload) upload.addEventListener('change', async () => {
+    if (!upload.files.length) return;
+    await saveDatasets(upload.files);
+    document.querySelector('#upload-form').submit();
+  });
+
+  document.querySelectorAll('[data-question]').forEach(button => button.addEventListener('click', () => {
+    const area = document.querySelector('textarea[name="question"]');
+    if (!area) return;
+    area.value = button.dataset.question;
+    area.dispatchEvent(new Event('input', { bubbles: true }));
+    area.focus();
+  }));
+
+  const ask = document.querySelector('#ask-form');
+  if (ask) ask.addEventListener('submit', async event => {
+    event.preventDefault();
+    document.querySelector('#loading').classList.add('show');
+    try {
+      const formData = new FormData(ask);
+      const datasets = await getDatasets();
+      datasets.forEach(dataset => formData.append('datasets', dataset.file, dataset.file.name));
+      const response = await fetch(ask.action, {
+        method: 'POST',
+        body: formData,
+        credentials: 'same-origin',
+        headers: { 'X-CSRFToken': formData.get('csrfmiddlewaretoken') },
+      });
+      if (!response.ok) throw new Error(`Analysis request failed (${response.status}).`);
+      const nextDocument = new DOMParser().parseFromString(await response.text(), 'text/html');
+      document.title = nextDocument.title;
+      document.body.replaceWith(nextDocument.body);
+      window.history.pushState({}, '', response.url);
+      bindPageControls();
+    } catch (error) {
+      document.querySelector('#loading')?.classList.remove('show');
+      window.alert(error.message);
+    }
+  });
+
+  const clearForm = document.querySelector('#clear-form');
+  if (clearForm) clearForm.addEventListener('submit', async event => {
+    event.preventDefault();
+    await clearDatasets();
+    clearForm.submit();
+  });
+
+  document.querySelectorAll('.remove-file-form').forEach(form => form.addEventListener('submit', async event => {
+    event.preventDefault();
+    await removeDatasetsByName(form.dataset.filename);
+    form.submit();
+  }));
+
+  const copy = document.querySelector('#copy-code');
+  if (copy) copy.addEventListener('click', async () => {
+    await navigator.clipboard.writeText(document.querySelector('#proof-code').innerText);
+    copy.textContent = 'Copied ✓';
+  });
+}
+
+bindPageControls();

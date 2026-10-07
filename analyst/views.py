@@ -11,7 +11,18 @@ from django.shortcuts import render
 from django.urls import reverse
 from django.views.decorators.http import require_POST
 
-from .services import ALLOWED_SUFFIXES, create_plan, execute_plan, load_tables, ollama_status, profile_tables, verify_result
+from .services import (
+    ALLOWED_SUFFIXES,
+    create_plan,
+    execute_plan,
+    is_invalid_completeness_refusal,
+    is_missing_data_question,
+    load_tables,
+    ollama_status,
+    profile_tables,
+    summarize_missing_data,
+    verify_result,
+)
 
 
 def _records(request):
@@ -105,7 +116,34 @@ def ask_question(request):
         tables, sources = load_tables(analysis_records)
         profile = profile_tables(tables, sources)
         context["profile"] = profile
+        if is_missing_data_question(question):
+            plan = {
+                "status": "READY",
+                "profile_result": True,
+                "reason": "Missing-value counts are reported directly from the uploaded table profiles.",
+                "code": "",
+                "assumptions": [],
+                "used_tables": list(profile),
+            }
+            context["execution"] = summarize_missing_data(profile)
+            context["checks"] = [
+                {"label": "All uploaded tables were profiled", "ok": bool(profile)},
+                {"label": "Missing-value counts came from the data profile", "ok": True},
+            ]
+            context["plan"] = plan
+            return render(request, "analyst/dashboard.html", context)
+
         plan = create_plan(question, profile)
+        if is_invalid_completeness_refusal(plan):
+            plan = create_plan(
+                question,
+                profile,
+                execution_error=(
+                    "The previous refusal was invalid. Every profiled row is the complete "
+                    "uploaded dataset. Do not demand a larger dataset because of its "
+                    "filename, preview size, or row count; generate the requested code."
+                ),
+            )
         context["plan"] = plan
         if plan["status"] == "CANNOT_DETERMINE":
             context["cannot_determine"] = True

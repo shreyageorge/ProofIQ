@@ -8,7 +8,15 @@ from django.test import TestCase, override_settings
 from django.urls import reverse
 from openpyxl import Workbook
 
-from .services import _ollama_request, create_plan, execute_plan, load_tables, profile_tables, validate_code
+from .services import (
+    _ollama_request,
+    create_plan,
+    execute_plan,
+    is_invalid_completeness_refusal,
+    load_tables,
+    profile_tables,
+    validate_code,
+)
 
 
 class AnalystCoreTests(TestCase):
@@ -39,6 +47,16 @@ class AnalystCoreTests(TestCase):
         profile = profile_tables(self.tables, self.sources)["sample_sales"]
         self.assertEqual(profile["rows"], 12)
         self.assertIn("Sales", profile["columns"])
+
+    def test_detects_invalid_small_sample_refusal(self):
+        self.assertTrue(is_invalid_completeness_refusal({
+            "status": "CANNOT_DETERMINE",
+            "reason": "Only 12 rows are available and a larger dataset is required.",
+        }))
+        self.assertFalse(is_invalid_completeness_refusal({
+            "status": "CANNOT_DETERMINE",
+            "reason": "No cost or profit column is available.",
+        }))
 
     def test_blocks_file_access(self):
         with self.assertRaises(ValueError):
@@ -251,6 +269,30 @@ class AnalystCoreTests(TestCase):
             retry_call.kwargs["execution_error"],
             r"Generated pandas analysis failed \((?:KeyError|IndexError)\)\.",
         )
+
+    @patch("analyst.views.create_plan")
+    def test_missing_data_question_uses_profile_without_model_call(self, create_plan_mock):
+        with patch(
+            "analyst.views.ollama_status",
+            return_value={"online": True, "ready": True, "model": "test"},
+        ):
+            response = self.client.post(
+                reverse("ask"),
+                {
+                    "question": "missing data test",
+                    "datasets": SimpleUploadedFile(
+                        "missing.csv",
+                        b"region,sales\nNorth,10\nSouth,\n",
+                        content_type="text/csv",
+                    ),
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "MISSING-DATA PROFILE")
+        self.assertContains(response, "sales: 1")
+        self.assertContains(response, "missing_count")
+        create_plan_mock.assert_not_called()
 
     def test_xlsx_can_be_removed_after_dashboard_profiles_it(self):
         workbook = Workbook()
