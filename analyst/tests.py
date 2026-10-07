@@ -89,6 +89,16 @@ class AnalystCoreTests(TestCase):
         output = execute_plan(plan["code"], self.tables)
         self.assertEqual(output["result"]["South"], 232000.0)
 
+    @override_settings(IS_VERCEL=True)
+    def test_vercel_executes_validated_plan_in_process(self):
+        code = (
+            "df = dfs['sample_sales']\n"
+            "result = float(df['Sales'].sum())\n"
+            "evidence = [{'rows': int(len(df))}]\nquality_notes = []"
+        )
+        output = execute_plan(code, self.tables)
+        self.assertEqual(output["result"], 564800.0)
+
     @override_settings(
         OLLAMA_URL="https://ollama.com",
         OLLAMA_API_KEY="test-cloud-key",

@@ -497,6 +497,40 @@ def validate_code(code):
 
 def execute_plan(code, tables):
     validate_code(code)
+    if getattr(settings, "IS_VERCEL", False):
+        # Vercel's Python runtime does not preserve the deployment's site-packages
+        # when a child interpreter is launched with `-I`. The same validated code
+        # is therefore executed in the function process with a tiny builtin set.
+        scope = {
+            "pd": pd,
+            "np": __import__("numpy"),
+            "dfs": {name: frame.copy() for name, frame in tables.items()},
+            "result": None,
+            "evidence": [],
+            "quality_notes": [],
+        }
+        safe_builtins = {
+            "abs": abs, "all": all, "any": any, "bool": bool, "dict": dict,
+            "enumerate": enumerate, "float": float, "int": int, "len": len,
+            "list": list, "max": max, "min": min, "range": range,
+            "round": round, "sorted": sorted, "str": str, "sum": sum,
+            "tuple": tuple, "zip": zip, "isinstance": isinstance,
+        }
+        try:
+            exec(
+                compile(code, "<generated-analysis>", "exec"),
+                {"__builtins__": safe_builtins},
+                scope,
+            )
+            return json.loads(json.dumps({
+                "result": _clean_for_json(scope["result"]),
+                "evidence": _clean_for_json(scope["evidence"]),
+                "quality_notes": _clean_for_json(scope["quality_notes"]),
+            }, ensure_ascii=False))
+        except Exception as exc:
+            raise RuntimeError(
+                f"Generated pandas analysis failed ({type(exc).__name__})."
+            ) from exc
     with tempfile.TemporaryDirectory(prefix="dataguard_") as temp_dir:
         temp = Path(temp_dir)
         manifest = {}
@@ -522,6 +556,25 @@ def execute_plan(code, tables):
             error_type = error_match.group(1) if error_match else "execution error"
             raise RuntimeError(f"Generated pandas analysis failed ({error_type}).")
         return json.loads(output_path.read_text(encoding="utf-8"))
+
+
+def _clean_for_json(value):
+    if isinstance(value, dict):
+        return {str(key): _clean_for_json(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_clean_for_json(item) for item in value]
+    if hasattr(value, "item"):
+        value = value.item()
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
 
 
 def verify_result(execution):
