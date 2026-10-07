@@ -3,5 +3,6 @@ openpyxl>=3.1,<4
 Django>=5.1,<6
 openai>=1.60,<3
 python-dotenv>=1,<2
+whitenoise>=6.8,<7
 xlrd>=2,<3
 pytest>=8,<10

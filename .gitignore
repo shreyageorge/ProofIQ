@@ -34,6 +34,7 @@ Thumbs.db
 .pytest_cache/
 .coverage
 htmlcov/
+staticfiles/
 
 # Generated files
 *.log
