@@ -63,7 +63,9 @@ AI_PROVIDER = os.getenv("AI_PROVIDER", "ollama").strip().lower()
 AI_FALLBACK_PROVIDER = os.getenv("AI_FALLBACK_PROVIDER", "").strip().lower()
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://127.0.0.1:11434").rstrip("/")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:4b")
-OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY", "").strip()
+# `OLLAMA_API_KEY` is the documented name. `OLLAMA` is accepted first for the
+# existing Vercel project, where the freshly rotated secret uses that name.
+OLLAMA_API_KEY = (os.getenv("OLLAMA") or os.getenv("OLLAMA_API_KEY", "")).strip()
 
 # A Vercel Function cannot reach the Ollama process on a developer's laptop.
 # Select Ollama Cloud automatically in production unless explicitly overridden.
